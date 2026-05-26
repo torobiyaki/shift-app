@@ -30,7 +30,7 @@ const firebaseConfig = {
 
 const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db   = getFirestore(app);
+const db   = getFirestore(app, "member11");
 const DATA_DOC    = doc(db, "shiftapp", "data");
 const USER_COLL   = collection(db, "shiftapp_users"); // ユーザー情報コレクション
 
