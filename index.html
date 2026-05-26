@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>シフト管理</title>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+  updatePassword, EmailAuthProvider, reauthenticateWithCredential
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ============================================================
+//  ★ Firebase設定をここに貼り付けてください
+//    Firebase Console > プロジェクト設定 > マイアプリ > firebaseConfig
+// ============================================================
+const firebaseConfig = {
+  apiKey:            "AIzaSyBlIqB0qzvsJ9lULl-jjEKpx5bX6tdfMLY",
+  authDomain:        "day-member.firebaseapp.com",
+  projectId:         "day-member",
+  storageBucket:     "day-member.firebasestorage.app",
+  messagingSenderId: "416564334116",
+  appId:             "1:416564334116:web:73cd49e279a2ce421e12b1",
+  measurementId:     "G-V3YKYNYYHL"
+};
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+const DATA_DOC    = doc(db, "shiftapp", "data");
+const USER_COLL   = collection(db, "shiftapp_users"); // ユーザー情報コレクション
+
+// ---- 状態 ----
+let S = {
+  members:[], roles:[], shifts:{},
+  weekOffset:0, sumWeekOffset:0,
+  selectedDate:null, openCL:{}, openSumDay:{}
+};
+let currentUser = null;
+let isAdmin = false;
+let unsubscribe = null;
+
+// ---- ユーザー情報取得 ----
+async function fetchUserInfo(uid) {
+  const snap = await getDoc(doc(db, "shiftapp_users", uid));
+  if (snap.exists()) return snap.data();
+  return null;
+}
+
+// ---- Firestore リアルタイム同期 ----
+function startSync() {
+  if (unsubscribe) unsubscribe();
+  unsubscribe = onSnapshot(DATA_DOC, snap => {
+    if (snap.exists()) {
+      const d = snap.data();
+      S.members = d.members || [];
+      S.roles   = d.roles   || [];
+      S.shifts  = d.shifts  || {};
+    }
+    renderWeek();
+    renderMembers();
+    renderRoles();
+    if (document.getElementById('tab-summary').classList.contains('active')) renderSummary();
+  });
+}
+
+async function saveData() {
+  try {
+    await setDoc(DATA_DOC, { members: S.members, roles: S.roles, shifts: S.shifts });
+  } catch(e) { showToast("保存に失敗しました"); }
+}
+
+// ---- 認証フロー ----
+onAuthStateChanged(auth, async user => {
+  if (user) {
+    currentUser = user;
+    const info = await fetchUserInfo(user.uid);
+
+    // 初回ログイン（パスワード未設定 → パスワード設定画面へ）
+    if (info && info.mustChangePassword) {
+      showScreen('password-setup');
+      document.getElementById('setup-name').textContent = info.displayName || user.email;
+      return;
+    }
+
+    isAdmin = info?.role === 'admin';
+    showScreen('app');
+    document.getElementById('user-name-label').textContent = info?.displayName || user.email;
+    document.getElementById('admin-badge').style.display = isAdmin ? 'inline-block' : 'none';
+    applyPermissions();
+    startSync();
+  } else {
+    currentUser = null;
+    isAdmin = false;
+    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    showScreen('login');
+  }
+});
+
+function showScreen(name) {
+  ['login','password-setup','app'].forEach(s => {
+    document.getElementById('screen-'+s).style.display = s===name ? (s==='app'?'flex':'flex') : 'none';
+  });
+}
+
+function applyPermissions() {
+  // 編集UI：管理者のみ表示
+  document.querySelectorAll('.admin-only').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
+  });
+  // 役割・メンバータブ：管理者のみ
+  document.getElementById('nav-members').style.display = isAdmin ? 'flex' : 'none';
+  document.getElementById('nav-roles').style.display   = isAdmin ? 'flex' : 'none';
+}
+
+// ---- ログイン ----
+window.doLogin = async function() {
+  const email = document.getElementById('login-email').value.trim();
+  const pass  = document.getElementById('login-pass').value;
+  const err   = document.getElementById('login-error');
+  const btn   = document.getElementById('login-btn');
+  err.textContent = '';
+  btn.disabled = true; btn.textContent = '確認中...';
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch(e) {
+    err.textContent = 'メールアドレスまたはパスワードが違います';
+    btn.disabled = false; btn.textContent = 'ログイン';
+  }
+};
+
+window.loginKeydown = function(e) { if(e.key==='Enter') doLogin(); };
+
+// ---- 初回パスワード設定 ----
+window.doSetupPassword = async function() {
+  const np  = document.getElementById('setup-new-pass').value;
+  const np2 = document.getElementById('setup-confirm-pass').value;
+  const err = document.getElementById('setup-error');
+  err.textContent = '';
+  if (np.length < 8) { err.textContent = 'パスワードは8文字以上にしてください'; return; }
+  if (np !== np2)    { err.textContent = 'パスワードが一致しません'; return; }
+  try {
+    await updatePassword(currentUser, np);
+    // mustChangePassword フラグを解除
+    await setDoc(doc(db, "shiftapp_users", currentUser.uid), { mustChangePassword: false }, { merge: true });
+    showToast('パスワードを設定しました');
+    // 再認証して続行
+    const info = await fetchUserInfo(currentUser.uid);
+    isAdmin = info?.role === 'admin';
+    showScreen('app');
+    document.getElementById('user-name-label').textContent = info?.displayName || currentUser.email;
+    document.getElementById('admin-badge').style.display = isAdmin ? 'inline-block' : 'none';
+    applyPermissions();
+    startSync();
+  } catch(e) {
+    err.textContent = 'エラーが発生しました。再度ログインしてください。';
+  }
+};
+
+window.setupKeydown = function(e) { if(e.key==='Enter') doSetupPassword(); };
+
+// ---- ログアウト ----
+window.doLogout = async function() {
+  if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+  await signOut(auth);
+};
+
+// ---- 祝日 ----
+const HOLIDAYS={
+  "2025-01-01":"元日","2025-01-13":"成人の日","2025-02-11":"建国記念の日","2025-02-12":"建国記念の日 振替","2025-02-23":"天皇誕生日","2025-02-24":"天皇誕生日 振替","2025-03-20":"春分の日","2025-04-29":"昭和の日","2025-05-03":"憲法記念日","2025-05-04":"みどりの日","2025-05-05":"こどもの日","2025-05-06":"こどもの日 振替","2025-07-21":"海の日","2025-08-11":"山の日","2025-09-15":"敬老の日","2025-09-23":"秋分の日","2025-10-13":"スポーツの日","2025-11-03":"文化の日","2025-11-23":"勤労感謝の日","2025-11-24":"勤労感謝の日 振替",
+  "2026-01-01":"元日","2026-01-12":"成人の日","2026-02-11":"建国記念の日","2026-02-23":"天皇誕生日","2026-03-20":"春分の日","2026-04-29":"昭和の日","2026-05-03":"憲法記念日","2026-05-04":"みどりの日","2026-05-05":"こどもの日","2026-05-06":"こどもの日 振替","2026-07-20":"海の日","2026-08-11":"山の日","2026-09-21":"敬老の日","2026-09-22":"国民の休日","2026-09-23":"秋分の日","2026-10-12":"スポーツの日","2026-11-03":"文化の日","2026-11-23":"勤労感謝の日",
+  "2027-01-01":"元日","2027-01-11":"成人の日","2027-02-11":"建国記念の日","2027-02-23":"天皇誕生日","2027-03-21":"春分の日","2027-03-22":"振替休日","2027-04-29":"昭和の日","2027-05-03":"憲法記念日","2027-05-04":"みどりの日","2027-05-05":"こどもの日","2027-07-19":"海の日","2027-08-11":"山の日","2027-09-20":"敬老の日","2027-09-23":"秋分の日","2027-10-11":"スポーツの日","2027-11-03":"文化の日","2027-11-23":"勤労感謝の日"
+};
+
+const DN=['日','月','火','水','木','金','土'];
+function getWeek(off){
+  const t=new Date(),dow=t.getDay();
+  const mon=new Date(t); mon.setDate(t.getDate()-(dow===0?6:dow-1)+off*7);
+  return Array.from({length:6},(_,i)=>{ const d=new Date(mon); d.setDate(mon.getDate()+i); return d; });
+}
+function dk(d){ return d.toISOString().slice(0,10); }
+function fmtDate(d){ return `${d.getMonth()+1}月${d.getDate()}日（${DN[d.getDay()]}）`; }
+function fmtShort(d){ return `${d.getMonth()+1}/${d.getDate()}`; }
+function fmtDow(d){ return DN[d.getDay()]; }
+function isHol(k){ return !!HOLIDAYS[k]; }
+function holName(k){ return HOLIDAYS[k]||''; }
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2500);
+}
+
+// ---- シフト ----
+window.renderWeek = function() {
+  const days=getWeek(S.weekOffset);
+  document.getElementById('week-label').textContent=`${days[0].getMonth()+1}/${days[0].getDate()} — ${days[5].getMonth()+1}/${days[5].getDate()}`;
+  const grid=document.getElementById('week-grid'); grid.innerHTML='';
+  days.forEach(d=>{
+    const key=dk(d),dow=d.getDay();
+    const names=[...new Set(Object.values(S.shifts[key]||{}).flat())].filter(Boolean);
+    const sel=S.selectedDate===key,sat=dow===6,hol=isHol(key);
+    let cls='day-cell'+(sel?' selected':hol?' hol':sat?' sat':'');
+    const cell=document.createElement('div'); cell.className=cls;
+    cell.innerHTML=`${hol&&!sel?'<div class="hol-dot"></div>':''}<span class="day-num">${d.getDate()}</span><div class="dot-row">${names.slice(0,3).map(()=>'<div class="dot"></div>').join('')}</div>`;
+    cell.onclick=()=>{ S.selectedDate=key; renderWeek(); renderDetail(); };
+    grid.appendChild(cell);
+  });
+  renderDetail();
+};
+
+window.renderDetail = function() {
+  const wrap=document.getElementById('detail-wrap');
+  if(!S.selectedDate){ wrap.innerHTML='<div class="no-select">日付を選んでシフトを確認・編集</div>'; return; }
+  const d=new Date(S.selectedDate+'T00:00:00');
+  const shift=S.shifts[S.selectedDate]||{};
+  const hol=holName(S.selectedDate);
+  let html=`<div class="detail-panel"><div class="detail-date"><div class="detail-date-icon">📅</div>${fmtDate(d)}</div>`;
+  if(hol) html+=`<div class="hol-label">🎌 ${hol}</div>`;
+  if(!S.roles.length){ html+=`<div class="empty">役割を登録してください</div>`; }
+  else {
+    S.roles.forEach((role,ri)=>{
+      const assigned=shift[role]||[], isOpen=!!S.openCL[role], rk=role.replace(/'/g,"\\'");
+      html+=`<div class="role-block"><div class="role-lbl">${role}</div><div class="assigned-row">`;
+      assigned.forEach(m=>{ html+=`<span class="assigned-tag">${m}<button class="rm-tag admin-only" onclick="toggleMember('${rk}','${m.replace(/'/g,"\\'")}')">✕</button></span>`; });
+      if(S.members.length) html+=`<button class="add-btn admin-only" onclick="toggleCL('${rk}')">${isOpen?'▲ 閉じる':'＋ 追加'}</button>`;
+      html+=`</div>`;
+      if(isOpen){
+        html+=`<div class="checklist admin-only">`;
+        S.members.forEach(m=>{
+          const checked=assigned.includes(m);
+          html+=`<div class="check-item${checked?' checked':''}" onclick="toggleMember('${rk}','${m.replace(/'/g,"\\'")}')"><div class="check-box">${checked?'✓':''}</div><span class="check-name">${m}</span></div>`;
+        });
+        html+=`</div>`;
+      }
+      html+=`</div>`;
+      if(ri<S.roles.length-1) html+=`<div class="role-divider"></div>`;
+    });
+  }
+  wrap.innerHTML=html+`</div>`;
+  applyPermissions();
+};
+
+window.toggleCL=function(role){ S.openCL[role]=!S.openCL[role]; renderDetail(); };
+window.toggleMember=function(role,member){
+  if(!isAdmin) return;
+  if(!S.shifts[S.selectedDate]) S.shifts[S.selectedDate]={};
+  const arr=S.shifts[S.selectedDate][role]||[];
+  const idx=arr.indexOf(member);
+  if(idx>=0) arr.splice(idx,1); else arr.push(member);
+  S.shifts[S.selectedDate][role]=arr;
+  saveData();
+};
+window.changeWeek=function(dir){ S.weekOffset+=dir; S.selectedDate=null; renderWeek(); };
+
+// ---- 一覧 ----
+window.renderSummary=function(){
+  const days=getWeek(S.sumWeekOffset);
+  document.getElementById('sum-week-label').textContent=`${days[0].getMonth()+1}/${days[0].getDate()} — ${days[5].getMonth()+1}/${days[5].getDate()}`;
+  let html='';
+  days.forEach(d=>{
+    const key=dk(d),dow=d.getDay(),shift=S.shifts[key]||{};
+    const allNames=[...new Set(Object.values(shift).flat())].filter(Boolean);
+    const isOpen=!!S.openSumDay[key],has=allNames.length>0,sat=dow===6,hol=isHol(key);
+    const circCls=has?'has':hol?'hol':sat?'sat':'', lblCls=hol?'hol':sat?'sat':'';
+    html+=`<div class="sum-card"><div class="sum-card-header${isOpen?' open':''}" onclick="toggleSumDay('${key}')">
+      <div class="sum-date-wrap">
+        <div class="sum-date-circle ${circCls}">${d.getDate()}</div>
+        <div>
+          <div class="sum-date-label ${lblCls}">${fmtShort(d)}（${fmtDow(d)}）${hol?`<span class="hol-inline">● ${holName(key)}</span>`:''}</div>
+          <div class="sum-date-sub">${has?allNames.length+'名のシフト':'未登録'}</div>
+        </div>
+      </div>
+      <div class="sum-right"><span class="sum-badge ${has?'has-b':'empty-b'}">${has?allNames.length+'人':'未登録'}</span><span class="chev">${isOpen?'▲':'▼'}</span></div>
+    </div>`;
+    if(isOpen){
+      const filled=S.roles.filter(r=>(shift[r]||[]).length);
+      html+=`<div class="sum-body">`;
+      if(!filled.length) html+=`<div class="sum-empty">シフト未登録</div>`;
+      else filled.forEach(role=>{ html+=`<div class="sum-row"><span class="sum-role">${role}</span><div class="sum-names">${(shift[role]||[]).map(n=>`<span class="sum-name-tag">${n}</span>`).join('')}</div></div>`; });
+      html+=`</div>`;
+    }
+    html+=`</div>`;
+  });
+  document.getElementById('summary-list').innerHTML=html;
+};
+window.toggleSumDay=function(key){ S.openSumDay[key]=!S.openSumDay[key]; renderSummary(); };
+window.changeSumWeek=function(dir){ S.sumWeekOffset+=dir; S.openSumDay={}; renderSummary(); };
+
+// ---- メンバー ----
+window.renderMembers=function(){
+  const el=document.getElementById('member-list');
+  if(!S.members.length){ el.innerHTML='<div class="empty">メンバーが登録されていません</div>'; return; }
+  let html='<div class="list-items">';
+  S.members.forEach((m,i)=>{
+    html+=`<div class="list-item" draggable="true" ondragstart="dragStart(event,'members',${i})" ondragover="dragOver(event,${i})" ondrop="dropItem(event,'members',${i})" ondragend="dragEnd(event)">
+      <div class="list-item-left"><div class="avatar">${m.slice(0,2)}</div><span class="list-item-name">${m}</span></div>
+      <div class="item-actions">
+        <div class="order-btns">
+          <button class="order-btn" onclick="reorder('members',${i},-1)" ${i===0?'disabled':''}>▲</button>
+          <button class="order-btn" onclick="reorder('members',${i},1)" ${i===S.members.length-1?'disabled':''}>▼</button>
+        </div>
+        <button class="del-btn" onclick="removeMember(${i})">🗑</button>
+      </div>
+    </div>`;
+  });
+  el.innerHTML=html+'</div>';
+};
+window.addMember=function(){ const inp=document.getElementById('new-member'),n=inp.value.trim(); if(!n||S.members.includes(n)) return; S.members.push(n); inp.value=''; saveData(); };
+window.removeMember=function(i){ S.members.splice(i,1); saveData(); };
+
+// ---- 役割 ----
+window.renderRoles=function(){
+  const el=document.getElementById('role-list');
+  if(!S.roles.length){ el.innerHTML='<div class="empty">役割が登録されていません</div>'; return; }
+  let html='<div class="list-items">';
+  S.roles.forEach((r,i)=>{
+    html+=`<div class="list-item" draggable="true" ondragstart="dragStart(event,'roles',${i})" ondragover="dragOver(event,${i})" ondrop="dropItem(event,'roles',${i})" ondragend="dragEnd(event)">
+      <div class="list-item-left"><div class="role-icon">🏷</div><span class="list-item-name">${r}</span></div>
+      <div class="item-actions">
+        <div class="order-btns">
+          <button class="order-btn" onclick="reorder('roles',${i},-1)" ${i===0?'disabled':''}>▲</button>
+          <button class="order-btn" onclick="reorder('roles',${i},1)" ${i===S.roles.length-1?'disabled':''}>▼</button>
+        </div>
+        <button class="del-btn" onclick="removeRole(${i})">🗑</button>
+      </div>
+    </div>`;
+  });
+  el.innerHTML=html+'</div>';
+};
+window.addRole=function(){ const inp=document.getElementById('new-role'),n=inp.value.trim(); if(!n||S.roles.includes(n)) return; S.roles.push(n); inp.value=''; saveData(); };
+window.removeRole=function(i){ S.roles.splice(i,1); saveData(); };
+
+// ---- 並び替え ----
+function moveItem(arr,i,dir){ const ni=i+dir; if(ni<0||ni>=arr.length) return; [arr[i],arr[ni]]=[arr[ni],arr[i]]; }
+window.reorder=function(type,i,dir){ moveItem(S[type],i,dir); saveData(); };
+let dragSrc={type:null,idx:null};
+window.dragStart=function(e,type,i){ dragSrc={type,idx:i}; e.currentTarget.classList.add('dragging'); };
+window.dragOver=function(e,i){ e.preventDefault(); document.querySelectorAll('.list-item').forEach(el=>el.classList.remove('drag-over')); if(dragSrc.idx!==i) e.currentTarget.classList.add('drag-over'); };
+window.dropItem=function(e,type,i){
+  e.preventDefault();
+  document.querySelectorAll('.list-item').forEach(el=>{ el.classList.remove('drag-over'); el.classList.remove('dragging'); });
+  if(dragSrc.type!==type||dragSrc.idx===i) return;
+  const arr=S[type],item=arr.splice(dragSrc.idx,1)[0]; arr.splice(i,0,item); saveData();
+};
+window.dragEnd=function(e){ e.currentTarget.classList.remove('dragging'); document.querySelectorAll('.list-item').forEach(el=>el.classList.remove('drag-over')); };
+
+// ---- タブ ----
+const TITLES={shift:'シフト',summary:'一覧',members:'メンバー',roles:'役割'};
+const SUBS={shift:'日付を選んで割り当て',summary:'週ごとのシフト確認',members:'スタッフの登録・管理',roles:'役割の登録・管理'};
+window.switchTab=function(tab){
+  ['shift','summary','members','roles'].forEach(t=>{
+    document.getElementById('tab-'+t).classList.toggle('active',t===tab);
+    document.getElementById('nav-'+t).classList.toggle('active',t===tab);
+  });
+  document.getElementById('page-title').textContent=TITLES[tab];
+  document.getElementById('page-sub').textContent=SUBS[tab];
+  if(tab==='members') renderMembers();
+  if(tab==='roles') renderRoles();
+  if(tab==='summary'){ S.sumWeekOffset=S.weekOffset; renderSummary(); }
+};
+</script>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+  --acc:#534AB7;--acc-light:#EEEDFE;--acc-mid:#AFA9EC;--acc-dark:#3C3489;--acc-text:#3C3489;
+  --sat:#185FA5;--sat-light:#E6F1FB;--sat-dark:#0C447C;
+  --hol:#A32D2D;--hol-light:#FCEBEB;--hol-dark:#791F1F;
+  --tag-bg:#EEEDFE;--tag-text:#3C3489;
+  --bg:#F4F3FC;--surface:#FFFFFF;--border:#E2E0F0;--text:#1A1830;--text2:#6B6890;
+}
+html,body{min-height:100%;font-family:'Hiragino Sans','Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif;background:var(--bg);color:var(--text)}
+
+/* トースト */
+#toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:#333;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;opacity:0;transition:all 0.3s;pointer-events:none;z-index:999;white-space:nowrap}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ===== ログイン ===== */
+#screen-login{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.login-card{background:var(--surface);border-radius:20px;padding:36px 28px;width:100%;max-width:360px;border:0.5px solid var(--border);box-shadow:0 4px 24px rgba(83,74,183,0.08)}
+.login-logo{width:52px;height:52px;border-radius:14px;background:var(--acc);display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 20px}
+.login-title{font-size:20px;font-weight:600;text-align:center;margin-bottom:4px}
+.login-sub{font-size:13px;color:var(--text2);text-align:center;margin-bottom:28px}
+.login-label{font-size:12px;font-weight:500;color:var(--text2);margin-bottom:6px;display:block}
+.login-input{width:100%;padding:12px 14px;border:0.5px solid var(--border);border-radius:10px;font-size:15px;background:#FAFAFA;color:var(--text);margin-bottom:14px;font-family:inherit;outline:none;transition:border-color 0.15s}
+.login-input:focus{border-color:var(--acc);background:#fff}
+.login-btn{width:100%;padding:13px;background:var(--acc);color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:500;cursor:pointer;font-family:inherit;margin-top:4px;transition:opacity 0.15s}
+.login-btn:disabled{opacity:0.6;cursor:default}
+.login-btn:active:not(:disabled){opacity:0.85}
+.login-error{font-size:13px;color:var(--hol);text-align:center;margin-top:12px;min-height:20px}
+.login-note{font-size:11px;color:var(--text2);text-align:center;margin-top:20px;line-height:1.6;border-top:0.5px solid var(--border);padding-top:16px}
+
+/* ===== パスワード設定 ===== */
+#screen-password-setup{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.setup-card{background:var(--surface);border-radius:20px;padding:36px 28px;width:100%;max-width:360px;border:0.5px solid var(--border);box-shadow:0 4px 24px rgba(83,74,183,0.08)}
+.setup-icon{width:52px;height:52px;border-radius:50%;background:var(--acc-light);display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 16px}
+.setup-title{font-size:18px;font-weight:600;text-align:center;margin-bottom:6px}
+.setup-sub{font-size:13px;color:var(--text2);text-align:center;margin-bottom:24px;line-height:1.6}
+.setup-name{font-weight:600;color:var(--acc-text)}
+
+/* ===== アプリ ===== */
+#screen-app{display:none;justify-content:center;align-items:flex-start;min-height:100vh;padding:0}
+.phone{background:#E8E6F5;max-width:430px;width:100%;min-height:100vh;display:flex;flex-direction:column}
+@media(min-width:480px){
+  .phone{border-radius:28px;margin:20px auto;min-height:auto;box-shadow:0 8px 40px rgba(83,74,183,0.15)}
+  #screen-app{padding:0 0 40px}
+}
+.screen{background:var(--bg);flex:1;display:flex;flex-direction:column;border-radius:inherit;overflow:hidden}
+.topbar{background:var(--acc);padding:16px 16px 12px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.topbar-left .topbar-title{font-size:19px;font-weight:600;color:#fff}
+.topbar-left .topbar-sub{font-size:11px;color:rgba(255,255,255,0.65);margin-top:2px}
+.topbar-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
+.user-info{display:flex;align-items:center;gap:5px}
+.user-name{font-size:12px;color:rgba(255,255,255,0.85);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.admin-badge{font-size:10px;background:rgba(255,255,255,0.25);color:#fff;border-radius:4px;padding:1px 6px;font-weight:500}
+.logout-btn{background:rgba(255,255,255,0.18);border:none;border-radius:8px;color:#fff;font-size:11px;padding:5px 10px;cursor:pointer;font-family:inherit}
+.logout-btn:active{background:rgba(255,255,255,0.28)}
+.tab-content{flex:1;overflow-y:auto}
+.section{display:none}.section.active{display:block}
+.bottomnav{display:flex;background:var(--surface);border-top:0.5px solid var(--border)}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px 12px;cursor:pointer;background:none;border:none;font-family:inherit;color:var(--text2);font-size:10px;border-top:2px solid transparent;transition:color 0.15s}
+.nav-btn.active{color:var(--acc);border-top-color:var(--acc)}
+.nav-icon{font-size:20px;line-height:1}
+
+/* カレンダー */
+.week-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface);border-bottom:0.5px solid var(--border)}
+.week-lbl{font-size:14px;font-weight:500}
+.icon-btn{background:none;border:0.5px solid var(--border);border-radius:10px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;color:var(--text)}
+.icon-btn:active{background:var(--bg)}
+.day-head-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));padding:10px 14px 4px;background:var(--surface)}
+.day-head{text-align:center;font-size:11px;color:var(--text2);font-weight:500}
+.day-head.sat{color:var(--sat)}
+.cal-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px;padding:6px 14px 12px;background:var(--surface)}
+.day-cell{border-radius:12px;padding:7px 4px 6px;cursor:pointer;min-height:62px;display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--bg);position:relative;transition:background 0.1s}
+.day-cell.sat .day-num{color:var(--sat)}
+.day-cell.hol{background:var(--hol-light)}.day-cell.hol .day-num{color:var(--hol)}
+.day-cell.selected{background:var(--acc) !important}
+.day-cell.selected .day-num{color:#fff !important}
+.day-cell.selected .dot{background:rgba(255,255,255,0.6)}
+.day-cell.selected .hol-dot{display:none}
+.hol-dot{width:4px;height:4px;border-radius:50%;background:var(--hol);position:absolute;top:5px;right:6px}
+.day-num{font-size:16px;font-weight:600;line-height:1;color:var(--text)}
+.dot-row{display:flex;gap:3px;flex-wrap:wrap;justify-content:center}
+.dot{width:5px;height:5px;border-radius:50%;background:var(--acc-mid)}
+
+/* 詳細 */
+.no-select{color:var(--text2);font-size:13px;text-align:center;padding:20px 16px}
+.detail-panel{padding:14px 16px;background:var(--surface);margin:8px 14px 14px;border-radius:16px;border:0.5px solid var(--border)}
+.detail-date{font-size:15px;font-weight:500;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.detail-date-icon{width:28px;height:28px;border-radius:8px;background:var(--acc-light);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.hol-label{font-size:11px;color:var(--hol);background:var(--hol-light);border-radius:6px;padding:2px 8px;font-weight:500;margin-bottom:10px;display:inline-block}
+.role-block{margin-bottom:14px}
+.role-lbl{font-size:11px;font-weight:600;color:var(--text2);margin-bottom:7px;letter-spacing:0.4px}
+.assigned-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:7px}
+.assigned-tag{display:inline-flex;align-items:center;gap:5px;background:var(--tag-bg);border-radius:20px;padding:5px 12px;font-size:13px;font-weight:500;color:var(--tag-text)}
+.rm-tag{background:none;border:none;cursor:pointer;color:var(--acc-dark);font-size:13px;line-height:1;padding:0;opacity:0.6}
+.add-btn{display:inline-flex;align-items:center;gap:4px;background:none;border:1px dashed var(--border);border-radius:20px;padding:5px 12px;font-size:12px;color:var(--text2);cursor:pointer;font-family:inherit}
+.checklist{margin-top:8px;border-radius:12px;overflow:hidden;border:0.5px solid var(--border)}
+.check-item{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer;border-bottom:0.5px solid var(--border);background:var(--surface);transition:background 0.1s}
+.check-item:last-child{border-bottom:none}
+.check-item.checked{background:var(--acc-light)}
+.check-box{width:22px;height:22px;border:1.5px solid var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;font-weight:700;color:var(--acc)}
+.check-item.checked .check-box{background:var(--acc);border-color:var(--acc);color:#fff}
+.check-name{font-size:15px}
+.role-divider{border:none;border-top:0.5px solid var(--border);margin:14px 0 0}
+
+/* リスト */
+.list-section{padding:14px}
+.list-add{display:flex;gap:8px;margin-bottom:14px;background:var(--surface);border-radius:14px;padding:10px 12px;border:0.5px solid var(--border)}
+.list-add input{flex:1;font-size:15px;background:none;border:none;outline:none;color:var(--text);font-family:inherit}
+.list-add input::placeholder{color:var(--text2)}
+.add-action-btn{background:var(--acc);color:#fff;border:none;border-radius:10px;cursor:pointer;font-family:inherit;padding:8px 14px;font-size:14px;font-weight:500;white-space:nowrap}
+.list-items{border-radius:14px;overflow:hidden;border:0.5px solid var(--border)}
+.list-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:0.5px solid var(--border);background:var(--surface);transition:opacity 0.15s}
+.list-item:last-child{border-bottom:none}
+.list-item.dragging{opacity:0.3}
+.list-item.drag-over{border-top:2px solid var(--acc)}
+.list-item-left{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+.avatar{width:36px;height:36px;border-radius:50%;background:var(--acc-light);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--acc-text);flex-shrink:0}
+.role-icon{width:36px;height:36px;border-radius:10px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.list-item-name{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.del-btn{background:none;border:none;cursor:pointer;font-size:16px;padding:4px;opacity:0.5}
+.order-btns{display:flex;flex-direction:column;gap:2px}
+.order-btn{background:var(--bg);border:none;border-radius:5px;width:26px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:10px;color:var(--text2)}
+.order-btn:disabled{opacity:0.2;cursor:default}
+.empty{text-align:center;padding:28px 16px;color:var(--text2);font-size:14px}
+
+/* 一覧 */
+.sum-week-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface);border-bottom:0.5px solid var(--border)}
+.sum-list{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.sum-card{background:var(--surface);border-radius:14px;overflow:hidden;border:0.5px solid var(--border)}
+.sum-card-header{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;cursor:pointer}
+.sum-card-header.open{border-bottom:0.5px solid var(--border)}
+.sum-date-wrap{display:flex;align-items:center;gap:10px}
+.sum-date-circle{width:38px;height:38px;border-radius:50%;background:var(--bg);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;flex-shrink:0}
+.sum-date-circle.sat{background:var(--sat-light);color:var(--sat-dark)}
+.sum-date-circle.hol{background:var(--hol-light);color:var(--hol-dark)}
+.sum-date-circle.has{background:var(--acc);color:#fff}
+.sum-date-label{font-size:14px;font-weight:500}
+.sum-date-label.sat{color:var(--sat-dark)}.sum-date-label.hol{color:var(--hol-dark)}
+.hol-inline{font-size:10px;color:var(--hol);margin-left:4px}
+.sum-date-sub{font-size:11px;color:var(--text2);margin-top:1px}
+.sum-right{display:flex;align-items:center;gap:8px}
+.sum-badge{font-size:11px;border-radius:20px;padding:3px 10px;font-weight:500}
+.sum-badge.empty-b{background:var(--bg);color:var(--text2)}
+.sum-badge.has-b{background:var(--acc-light);color:var(--acc-text)}
+.chev{font-size:11px;color:var(--text2)}
+.sum-body{padding:10px 14px 12px}
+.sum-row{display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-bottom:0.5px solid var(--border)}
+.sum-row:last-child{border-bottom:none}
+.sum-role{font-size:12px;color:var(--text2);min-width:68px;padding-top:3px;flex-shrink:0}
+.sum-names{display:flex;flex-wrap:wrap;gap:5px}
+.sum-name-tag{font-size:13px;font-weight:500;color:var(--tag-text);background:var(--tag-bg);border-radius:8px;padding:3px 9px}
+.sum-empty{font-size:13px;color:var(--text2);font-style:italic}
+</style>
+</head>
+<body>
+<div id="toast"></div>
+
+<!-- ログイン画面 -->
+<div id="screen-login">
+  <div class="login-card">
+    <div class="login-logo">📋</div>
+    <div class="login-title">シフト管理</div>
+    <div class="login-sub">アカウントでログイン</div>
+    <label class="login-label">メールアドレス</label>
+    <input class="login-input" id="login-email" type="email" placeholder="your@email.com" onkeydown="loginKeydown(event)">
+    <label class="login-label">パスワード</label>
+    <input class="login-input" id="login-pass" type="password" placeholder="••••••••" onkeydown="loginKeydown(event)">
+    <button class="login-btn" id="login-btn" onclick="doLogin()">ログイン</button>
+    <div class="login-error" id="login-error"></div>
+    <div class="login-note">アカウントは管理者から発行されます<br>初回ログイン後にパスワードを設定してください</div>
+  </div>
+</div>
+
+<!-- 初回パスワード設定画面 -->
+<div id="screen-password-setup">
+  <div class="setup-card">
+    <div class="setup-icon">🔑</div>
+    <div class="setup-title">パスワードを設定</div>
+    <div class="setup-sub"><span class="setup-name" id="setup-name"></span> さん、<br>初回ログインです。パスワードを設定してください。</div>
+    <label class="login-label">新しいパスワード（8文字以上）</label>
+    <input class="login-input" id="setup-new-pass" type="password" placeholder="新しいパスワード" onkeydown="setupKeydown(event)">
+    <label class="login-label">パスワードを再入力</label>
+    <input class="login-input" id="setup-confirm-pass" type="password" placeholder="確認用パスワード" onkeydown="setupKeydown(event)">
+    <button class="login-btn" onclick="doSetupPassword()">設定して開始</button>
+    <div class="login-error" id="setup-error"></div>
+  </div>
+</div>
+
+<!-- アプリ画面 -->
+<div id="screen-app">
+  <div class="phone">
+    <div class="screen">
+      <div class="topbar">
+        <div class="topbar-left">
+          <div class="topbar-title" id="page-title">シフト</div>
+          <div class="topbar-sub" id="page-sub">日付を選んで割り当て</div>
+        </div>
+        <div class="topbar-right">
+          <div class="user-info">
+            <span class="user-name" id="user-name-label"></span>
+            <span class="admin-badge" id="admin-badge">管理者</span>
+          </div>
+          <button class="logout-btn" onclick="doLogout()">ログアウト</button>
+        </div>
+      </div>
+      <div class="tab-content">
+        <div id="tab-shift" class="section active">
+          <div class="week-nav">
+            <button class="icon-btn" onclick="changeWeek(-1)">◀</button>
+            <div class="week-lbl" id="week-label"></div>
+            <button class="icon-btn" onclick="changeWeek(1)">▶</button>
+          </div>
+          <div class="day-head-row">
+            <div class="day-head">月</div><div class="day-head">火</div><div class="day-head">水</div><div class="day-head">木</div><div class="day-head">金</div><div class="day-head sat">土</div>
+          </div>
+          <div class="cal-grid" id="week-grid"></div>
+          <div id="detail-wrap"></div>
+        </div>
+        <div id="tab-summary" class="section">
+          <div class="sum-week-nav">
+            <button class="icon-btn" onclick="changeSumWeek(-1)">◀</button>
+            <div class="week-lbl" id="sum-week-label"></div>
+            <button class="icon-btn" onclick="changeSumWeek(1)">▶</button>
+          </div>
+          <div class="sum-list" id="summary-list"></div>
+        </div>
+        <div id="tab-members" class="section">
+          <div class="list-section">
+            <div class="list-add"><input type="text" id="new-member" placeholder="名前を入力" onkeydown="if(event.key==='Enter')addMember()"><button class="add-action-btn" onclick="addMember()">追加</button></div>
+            <div id="member-list"></div>
+          </div>
+        </div>
+        <div id="tab-roles" class="section">
+          <div class="list-section">
+            <div class="list-add"><input type="text" id="new-role" placeholder="役割名を入力" onkeydown="if(event.key==='Enter')addRole()"><button class="add-action-btn" onclick="addRole()">追加</button></div>
+            <div id="role-list"></div>
+          </div>
+        </div>
+      </div>
+      <div class="bottomnav">
+        <button class="nav-btn active" id="nav-shift" onclick="switchTab('shift')"><span class="nav-icon">📅</span>シフト</button>
+        <button class="nav-btn" id="nav-summary" onclick="switchTab('summary')"><span class="nav-icon">📋</span>一覧</button>
+        <button class="nav-btn" id="nav-members" onclick="switchTab('members')"><span class="nav-icon">👥</span>メンバー</button>
+        <button class="nav-btn" id="nav-roles" onclick="switchTab('roles')"><span class="nav-icon">🏷</span>役割</button>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
