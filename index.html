@@ -213,10 +213,33 @@ window.renderDetail=function(){
       if(ri<S.roles.length-1) html+=`<div class="role-divider"></div>`;
     });
   }
+  // 備考欄
+  const memo=shift['__memo__']||'';
+  html+=`<div class="role-divider"></div>
+  <div class="role-block" style="margin-top:14px">
+    <div class="role-lbl">備考</div>
+    <div class="admin-only">
+      <textarea class="memo-input" id="memo-input" placeholder="自由記載...">${memo}</textarea>
+      <button class="memo-save-btn" onclick="saveMemo()">保存</button>
+    </div>
+    <div class="memo-view" id="memo-view">${memo?`<div class="memo-text">${memo.replace(/
+/g,'<br>')}</div>`:'<span style="color:var(--text2);font-size:13px;font-style:italic">記載なし</span>'}</div>
+  </div>`;
+
   wrap.innerHTML=html+`</div>`;
   applyPermissions();
+  const memoView=document.getElementById('memo-view');
+  if(memoView) memoView.style.display=isAdmin?'none':'block';
 };
 
+window.saveMemo=function(){
+  if(!isAdmin) return;
+  const val=document.getElementById('memo-input')?.value||'';
+  if(!S.shifts[S.selectedDate]) S.shifts[S.selectedDate]={};
+  S.shifts[S.selectedDate]['__memo__']=val;
+  saveData();
+  showToast('備考を保存しました');
+};
 window.toggleCL=function(role){ S.openCL[role]=!S.openCL[role]; renderDetail(); };
 window.toggleMember=function(role,member){
   if(!isAdmin) return;
@@ -254,6 +277,8 @@ window.renderSummary=function(){
       html+=`<div class="sum-body">`;
       if(!filled.length) html+=`<div class="sum-empty">シフト未登録</div>`;
       else filled.forEach(role=>{ html+=`<div class="sum-row"><span class="sum-role">${role}</span><div class="sum-names">${(shift[role]||[]).map(n=>`<span class="sum-name-tag">${n}</span>`).join('')}</div></div>`; });
+      const sumMemo=shift['__memo__']||'';
+      if(sumMemo) html+=`<div class="sum-memo">📝 ${sumMemo.replace(/\n/g,' / ')}</div>`;
       html+=`</div>`;
     }
     html+=`</div>`;
@@ -528,6 +553,13 @@ html,body{min-height:100%;font-family:'Hiragino Sans','Hiragino Kaku Gothic ProN
 .modal-close{background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);padding:4px}
 
 /* 一覧 */
+.memo-input{width:100%;min-height:72px;border:0.5px solid var(--border);border-radius:10px;padding:10px 12px;font-size:14px;font-family:inherit;color:var(--text);background:#FAFAFA;outline:none;resize:vertical;margin-bottom:8px}
+.memo-input:focus{border-color:var(--acc);background:#fff}
+.memo-save-btn{background:var(--acc);color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit}
+.memo-save-btn:active{opacity:0.85}
+.memo-text{font-size:14px;color:var(--text);line-height:1.6;background:var(--bg);border-radius:10px;padding:10px 12px}
+.memo-view{margin-top:4px}
+.sum-memo{font-size:12px;color:var(--text2);padding:6px 0;line-height:1.5;border-top:0.5px solid var(--border);margin-top:6px}
 .sum-week-nav{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface);border-bottom:0.5px solid var(--border)}
 .sum-list{padding:12px 14px;display:flex;flex-direction:column;gap:8px}
 .sum-card{background:var(--surface);border-radius:14px;overflow:hidden;border:0.5px solid var(--border)}
