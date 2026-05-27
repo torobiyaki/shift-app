@@ -215,16 +215,8 @@ window.renderDetail=function(){
   }
   // 備考欄
   const memo=shift['__memo__']||'';
-  html+=`<div class="role-divider"></div>
-  <div class="role-block" style="margin-top:14px">
-    <div class="role-lbl">備考</div>
-    <div class="admin-only">
-      <textarea class="memo-input" id="memo-input" placeholder="自由記載...">${memo}</textarea>
-      <button class="memo-save-btn" onclick="saveMemo()">保存</button>
-    </div>
-    <div class="memo-view" id="memo-view">${memo?`<div class="memo-text">${memo.replace(/
-/g,'<br>')}</div>`:'<span style="color:var(--text2);font-size:13px;font-style:italic">記載なし</span>'}</div>
-  </div>`;
+  const memoDisplay=memo?('<div class="memo-text">'+memo.split('\n').join('<br>')+'</div>'):'<span style="color:var(--text2);font-size:13px;font-style:italic">記載なし</span>';
+  html+='<div class="role-divider"></div><div class="role-block" style="margin-top:14px"><div class="role-lbl">備考</div><div class="admin-only"><textarea class="memo-input" id="memo-input" placeholder="自由記載...">'+memo+'</textarea><button class="memo-save-btn" onclick="saveMemo()">保存</button></div><div class="memo-view" id="memo-view">'+memoDisplay+'</div></div>';
 
   wrap.innerHTML=html+`</div>`;
   applyPermissions();
@@ -277,8 +269,8 @@ window.renderSummary=function(){
       html+=`<div class="sum-body">`;
       if(!filled.length) html+=`<div class="sum-empty">シフト未登録</div>`;
       else filled.forEach(role=>{ html+=`<div class="sum-row"><span class="sum-role">${role}</span><div class="sum-names">${(shift[role]||[]).map(n=>`<span class="sum-name-tag">${n}</span>`).join('')}</div></div>`; });
-      const sumMemo=shift['__memo__']||'';
-      if(sumMemo) html+=`<div class="sum-memo">📝 ${sumMemo.replace(/\n/g,' / ')}</div>`;
+            const sumMemo=shift['__memo__']||'';
+      if(sumMemo) html+='<div class="sum-memo">📝 '+sumMemo.split('\n').join(' / ')+'</div>';
       html+=`</div>`;
     }
     html+=`</div>`;
