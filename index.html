@@ -224,13 +224,15 @@ window.renderDetail=function(){
   if(memoView) memoView.style.display=isAdmin?'none':'block';
 };
 
-window.saveMemo=function(){
+window.saveMemo=async function(){
   if(!isAdmin) return;
   const val=document.getElementById('memo-input')?.value||'';
   if(!S.shifts[S.selectedDate]) S.shifts[S.selectedDate]={};
   S.shifts[S.selectedDate]['__memo__']=val;
-  saveData();
-  showToast('備考を保存しました');
+  try{
+    await setDoc(DATA_DOC,{members:S.members,roles:S.roles,shifts:S.shifts});
+    showToast('備考を保存しました');
+  }catch(e){ showToast('保存に失敗しました'); }
 };
 window.toggleCL=function(role){ S.openCL[role]=!S.openCL[role]; renderDetail(); };
 window.toggleMember=function(role,member){
@@ -241,6 +243,21 @@ window.toggleMember=function(role,member){
   if(idx>=0) arr.splice(idx,1); else arr.push(member);
   S.shifts[S.selectedDate][role]=arr;
   saveData();
+};
+
+// 削除確認キー管理
+const pendingRemove={};
+window.requestRemoveMember=function(role,member){
+  const key=role+'::'+member;
+  if(pendingRemove[key]){
+    // 2回目 → 実際に削除
+    delete pendingRemove[key];
+    toggleMember(role,member);
+  } else {
+    // 1回目 → 赤色に変更
+    pendingRemove[key]=true;
+    renderDetail();
+  }
 };
 window.changeWeek=function(dir){ S.weekOffset+=dir; S.selectedDate=null; renderWeek(); };
 
@@ -259,10 +276,10 @@ window.renderSummary=function(){
         <div class="sum-date-circle ${circCls}">${d.getDate()}</div>
         <div>
           <div class="sum-date-label ${lblCls}">${fmtShort(d)}（${fmtDow(d)}）${hol?`<span class="hol-inline">● ${holName(key)}</span>`:''}</div>
-          <div class="sum-date-sub">${has?allNames.length+'名のシフト':'未登録'}</div>
+          <div class="sum-date-sub">${has?'出席 '+allNames.length+'名':'未登録'}</div>
         </div>
       </div>
-      <div class="sum-right"><span class="sum-badge ${has?'has-b':'empty-b'}">${has?allNames.length+'人':'未登録'}</span><span class="chev">${isOpen?'▲':'▼'}</span></div>
+      <div class="sum-right"><span class="sum-badge ${has?'has-b':'empty-b'}">${has?'出席 '+allNames.length+'人':'未登録'}</span><span class="chev">${isOpen?'▲':'▼'}</span></div>
     </div>`;
     if(isOpen){
       const filled=S.roles.filter(r=>(shift[r]||[]).length);
@@ -499,6 +516,8 @@ html,body{min-height:100%;font-family:'Hiragino Sans','Hiragino Kaku Gothic ProN
 .assigned-row{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:7px}
 .assigned-tag{display:inline-flex;align-items:center;gap:5px;background:var(--tag-bg);border-radius:20px;padding:5px 12px;font-size:13px;font-weight:500;color:var(--tag-text)}
 .rm-tag{background:none;border:none;cursor:pointer;color:var(--acc-dark);font-size:13px;line-height:1;padding:0;opacity:0.6}
+.assigned-tag.pending-remove{background:#FCEBEB;border:1px solid var(--hol);color:var(--hol-dark)}
+.assigned-tag.pending-remove .rm-tag{color:var(--hol);font-size:11px;opacity:1;font-weight:500}
 .add-btn{display:inline-flex;align-items:center;gap:4px;background:none;border:1px dashed var(--border);border-radius:20px;padding:5px 12px;font-size:12px;color:var(--text2);cursor:pointer;font-family:inherit}
 .no-eligible{font-size:12px;color:var(--text2);margin-top:6px;padding:8px 12px;background:var(--bg);border-radius:8px;font-style:italic}
 .checklist{margin-top:8px;border-radius:12px;overflow:hidden;border:0.5px solid var(--border)}
