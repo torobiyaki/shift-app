@@ -144,7 +144,7 @@ function getWeek(off){
   const mon=new Date(t); mon.setDate(t.getDate()-(dow===0?6:dow-1)+off*7);
   return Array.from({length:6},(_,i)=>{ const d=new Date(mon); d.setDate(mon.getDate()+i); return d; });
 }
-function dk(d){ return d.toISOString().slice(0,10); }
+function dk(d){ const jst=new Date(d.getTime()+9*60*60*1000); return jst.toISOString().slice(0,10); }
 function fmtDate(d){ return `${d.getMonth()+1}月${d.getDate()}日（${DN[d.getDay()]}）`; }
 function fmtShort(d){ return `${d.getMonth()+1}/${d.getDate()}`; }
 function fmtDow(d){ return DN[d.getDay()]; }
@@ -229,10 +229,14 @@ window.saveMemo=async function(){
   const val=document.getElementById('memo-input')?.value||'';
   if(!S.shifts[S.selectedDate]) S.shifts[S.selectedDate]={};
   S.shifts[S.selectedDate]['__memo__']=val;
+  // onSnapshotを一時停止して保存
+  if(unsubscribe){ unsubscribe(); unsubscribe=null; }
   try{
     await setDoc(DATA_DOC,{members:S.members,roles:S.roles,shifts:S.shifts});
     showToast('備考を保存しました');
   }catch(e){ showToast('保存に失敗しました'); }
+  // 再開
+  startSync();
 };
 window.toggleCL=function(role){ S.openCL[role]=!S.openCL[role]; renderDetail(); };
 window.toggleMember=function(role,member){
@@ -246,16 +250,16 @@ window.toggleMember=function(role,member){
 };
 
 // 削除確認キー管理
-const pendingRemove={};
+window.pendingRemove={};
 window.requestRemoveMember=function(role,member){
   const key=role+'::'+member;
-  if(pendingRemove[key]){
+  if(window.pendingRemove[key]){
     // 2回目 → 実際に削除
-    delete pendingRemove[key];
+    delete window.pendingRemove[key];
     toggleMember(role,member);
   } else {
     // 1回目 → 赤色に変更
-    pendingRemove[key]=true;
+    window.pendingRemove[key]=true;
     renderDetail();
   }
 };
@@ -276,10 +280,10 @@ window.renderSummary=function(){
         <div class="sum-date-circle ${circCls}">${d.getDate()}</div>
         <div>
           <div class="sum-date-label ${lblCls}">${fmtShort(d)}（${fmtDow(d)}）${hol?`<span class="hol-inline">● ${holName(key)}</span>`:''}</div>
-          <div class="sum-date-sub">${has?'出席 '+allNames.length+'名':'未登録'}</div>
+          <div class="sum-date-sub">${has?('出席 '+allNames.length+'名'):'未登録'}</div>
         </div>
       </div>
-      <div class="sum-right"><span class="sum-badge ${has?'has-b':'empty-b'}">${has?'出席 '+allNames.length+'人':'未登録'}</span><span class="chev">${isOpen?'▲':'▼'}</span></div>
+      <div class="sum-right"><span class="sum-badge ${has?'has-b':'empty-b'}">${has?('出席 '+allNames.length+'人'):'未登録'}</span><span class="chev">${isOpen?'▲':'▼'}</span></div>
     </div>`;
     if(isOpen){
       const filled=S.roles.filter(r=>(shift[r]||[]).length);
