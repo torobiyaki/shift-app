@@ -27,6 +27,7 @@ const DATA_DOC = doc(db, "shiftapp", "data");
 let S = { members:[], roles:[], shifts:{}, weekOffset:0, sumWeekOffset:0, selectedDate:null, openCL:{}, openSumDay:{} };
 let currentUser=null, isAdmin=false, unsubscribe=null;
 window.pendingRemove = {};
+window.sumPendingRemove = {};
 
 async function fetchUserInfo(uid) {
   const snap = await getDoc(doc(db,"shiftapp_users",uid));
@@ -239,14 +240,20 @@ window.renderDetail = function() {
   wrap.innerHTML=html;
 };
 
-window.saveMemo = function() {
+window.saveMemo = async function() {
   if(!isAdmin) return;
   const textarea=document.getElementById('memo-input');
   if(!textarea){ showToast('入力欄が見つかりません'); return; }
   if(!S.shifts[S.selectedDate]) S.shifts[S.selectedDate]={};
   S.shifts[S.selectedDate]['__memo__']=textarea.value||'';
-  saveData();
-  showToast('備考を保存しました');
+  // onSnapshotを停止してから保存（上書き防止）
+  if(unsubscribe){ unsubscribe(); unsubscribe=null; }
+  try {
+    await setDoc(DATA_DOC,{members:S.members,roles:S.roles,shifts:S.shifts});
+    showToast('備考を保存しました');
+  } catch(e){ showToast('保存に失敗しました'); }
+  // 同期再開
+  startSync();
 };
 
 window.toggleCL = function(role) { S.openCL[role]=!S.openCL[role]; renderDetail(); };
@@ -272,6 +279,26 @@ window.requestRemoveMember = function(role, member) {
   }
 };
 
+window.sumRequestRemove = function(dateKey, role, member) {
+  const key=dateKey+'::'+role+'::'+member;
+  if(window.sumPendingRemove[key]){
+    // 2回目 → 削除
+    delete window.sumPendingRemove[key];
+    if(S.shifts[dateKey] && S.shifts[dateKey][role]){
+      const arr=S.shifts[dateKey][role];
+      const idx=arr.indexOf(member);
+      if(idx>=0) arr.splice(idx,1);
+      S.shifts[dateKey][role]=arr;
+      saveData();
+    }
+    renderSummary();
+  } else {
+    // 1回目 → 赤くする
+    window.sumPendingRemove[key]=true;
+    renderSummary();
+  }
+};
+
 window.changeWeek = function(dir) { S.weekOffset+=dir; S.selectedDate=null; window.pendingRemove={}; renderWeek(); };
 
 // ---- 一覧 ----
@@ -281,7 +308,7 @@ window.renderSummary = function() {
   let html='';
   days.forEach(function(d) {
     const key=dk(d), dow=d.getDay(), shift=S.shifts[key]||{};
-    const allNames=[...new Set(Object.values(shift).flat())].filter(function(x){ return x && x!=='__memo__'; });
+    const allNames=[...new Set(Object.entries(shift).filter(function(e){ return e[0]!=='__memo__'; }).map(function(e){ return e[1]; }).flat())].filter(Boolean);
     const isOpen=!!S.openSumDay[key], has=allNames.length>0, sat=dow===6, hol=isHol(key);
     const circCls=has?'has':hol?'hol':sat?'sat':'';
     const lblCls=hol?'hol':sat?'sat':'';
@@ -304,7 +331,10 @@ window.renderSummary = function() {
       else {
         filled.forEach(function(role){
           html+='<div class="sum-row"><span class="sum-role">'+role+'</span><div class="sum-names">';
-          (shift[role]||[]).forEach(function(n){ html+='<span class="sum-name-tag">'+n+'</span>'; });
+          (shift[role]||[]).forEach(function(n){ const spkey=key+'::'+role+'::'+n;
+            const spPending=!!window.sumPendingRemove[spkey];
+            html+='<span class="sum-name-tag'+(spPending?' sum-pending-remove':'')+'" onclick="sumRequestRemove(''+key+'',''+role.replace(/'/g,"\'")+'',''+n.replace(/'/g,"\'")+'')">'+n+'</span>';
+          }); });
           html+='</div></div>';
         });
       }
@@ -580,6 +610,8 @@ html,body{min-height:100%;font-family:'Hiragino Sans','Hiragino Kaku Gothic ProN
 .sum-names{display:flex;flex-wrap:wrap;gap:5px}
 .sum-name-tag{font-size:13px;font-weight:500;color:var(--tag-text);background:var(--tag-bg);border-radius:8px;padding:3px 9px}
 .sum-empty{font-size:13px;color:var(--text2);font-style:italic}
+.sum-name-tag{cursor:pointer}
+.sum-name-tag.sum-pending-remove{background:#FCEBEB;color:var(--hol-dark);border:1px solid var(--hol)}
 .sum-memo{font-size:12px;color:var(--text2);padding:6px 0;line-height:1.5;border-top:0.5px solid var(--border);margin-top:6px}
 </style>
 </head>
