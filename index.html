@@ -194,7 +194,11 @@ window.renderDetail=function(){
       // この役割にタグ付けされたメンバーだけ絞り込む
       const eligible=S.members.filter(m=>memberRoles(m).includes(role));
       html+=`<div class="role-block"><div class="role-lbl">${role}</div><div class="assigned-row">`;
-      assigned.forEach(m=>{ html+=`<span class="assigned-tag">${m}<button class="rm-tag admin-only" onclick="toggleMember('${rk}','${m.replace(/'/g,"\\'")}')">✕</button></span>`; });
+      assigned.forEach(m=>{
+        const mk=m.replace(/'/g,"\'");
+        const isPending=window.pendingRemove&&window.pendingRemove[role+'::'+m];
+        html+='<span class="assigned-tag'+(isPending?' pending-remove':'')+'">'+m+'<button class="rm-tag admin-only" onclick="requestRemoveMember(\''+rk+'\',\''+mk+'\')">✕</button></span>';
+      });
       if(eligible.length||isOpen) html+=`<button class="add-btn admin-only" onclick="toggleCL('${rk}')">${isOpen?'▲ 閉じる':'＋ 追加'}</button>`;
       html+=`</div>`;
       if(isOpen){
@@ -214,9 +218,11 @@ window.renderDetail=function(){
     });
   }
   // 備考欄
-  const memo=shift['__memo__']||'';
-  const memoDisplay=memo?('<div class="memo-text">'+memo.split('\n').join('<br>')+'</div>'):'<span style="color:var(--text2);font-size:13px;font-style:italic">記載なし</span>';
-  html+='<div class="role-divider"></div><div class="role-block" style="margin-top:14px"><div class="role-lbl">備考</div><div class="admin-only"><textarea class="memo-input" id="memo-input" placeholder="自由記載...">'+memo+'</textarea><button class="memo-save-btn" onclick="saveMemo()">保存</button></div><div class="memo-view" id="memo-view">'+memoDisplay+'</div></div>';
+    const memo=shift['__memo__']||'';
+  html+='<div class="role-divider"></div><div class="role-block" style="margin-top:14px"><div class="role-lbl">備考</div>';
+  if(isAdmin){ html+='<textarea class="memo-input" id="memo-input" placeholder="自由記載...">'+memo+'</textarea><button class="memo-save-btn" onclick="saveMemo()">保存</button>'; }
+  else{ html+='<div class="memo-text">'+( memo?memo.split('\n').join('<br>'):'<span style="color:var(--text2);font-size:13px;font-style:italic">記載なし</span>' )+'</div>'; }
+  html+='</div>';
 
   wrap.innerHTML=html+`</div>`;
   applyPermissions();
