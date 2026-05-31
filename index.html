@@ -224,8 +224,7 @@ window.renderDetail = function() {
       const eligible = S.members.filter(function(m) { return memberRoles(m).indexOf(role) >= 0; });
       html += "<div class='role-block'><div class='role-lbl'>" + role + "</div><div class='assigned-row'>";
       assigned.forEach(function(m) {
-        const isPending = !!window.pendingRemove[role + "::" + m];
-        html += "<span class='assigned-tag" + (isPending ? " pending-remove" : "") + "'>" + m;
+        html += "<span class='assigned-tag'>" + m;
         if (isAdmin) html += "<button class='rm-tag' onclick=\"requestRemoveMember('" + q(role) + "','" + q(m) + "')\">✕</button>";
         html += "</span>";
       });
@@ -292,13 +291,8 @@ window.toggleMember = function(role, member) {
 };
 
 window.requestRemoveMember = function(role, member) {
-  const key = role + "::" + member;
-  if (window.pendingRemove[key]) {
-    delete window.pendingRemove[key];
+  if (confirm(member + " を削除しますか？")) {
     window.toggleMember(role, member);
-  } else {
-    window.pendingRemove[key] = true;
-    renderDetail();
   }
 };
 
