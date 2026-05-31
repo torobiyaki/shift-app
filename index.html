@@ -45,6 +45,14 @@ function startSync() {
       S.members = raw.map(function(m) { return typeof m === "string" ? {name:m, roles:[]} : m; });
       S.roles = d.roles || [];
       S.shifts = d.shifts || {};
+      // 旧フィールド名 __memo__ を note に移行
+      Object.keys(S.shifts).forEach(function(dateKey) {
+        const s = S.shifts[dateKey];
+        if (s && s["__memo__"] !== undefined) {
+          s["note"] = s["__memo__"];
+          delete s["__memo__"];
+        }
+      });
     }
     renderWeek();
     renderMembers();
@@ -182,10 +190,7 @@ window.renderWeek = function() {
   days.forEach(function(d) {
     const key = dk(d), dow = d.getDay();
     const shift = S.shifts[key] || {};
-    const names = [];
-    Object.keys(shift).forEach(function(r) {
-      if (r !== "__memo__") { (shift[r] || []).forEach(function(n) { if (names.indexOf(n) < 0) names.push(n); }); }
-    });
+    const names = (shift["出席"] && Array.isArray(shift["出席"])) ? shift["出席"] : [];
     const sel = S.selectedDate === key, sat = dow === 6, hol = isHol(key);
     const cell = document.createElement("div");
     cell.className = "day-cell" + (sel ? " selected" : hol ? " hol" : sat ? " sat" : "");
@@ -246,7 +251,7 @@ window.renderDetail = function() {
     });
   }
 
-  const memo = shift["__memo__"] || "";
+  const memo = shift["note"] || "";
   html += "<div class='role-divider'></div>";
   html += "<div class='role-block' style='margin-top:14px'>";
   html += "<div class='role-lbl'>備考</div>";
@@ -265,12 +270,12 @@ window.saveMemo = async function() {
   const textarea = document.getElementById("memo-input");
   if (!textarea) { showToast("入力欄が見つかりません"); return; }
   if (!S.shifts[S.selectedDate]) S.shifts[S.selectedDate] = {};
-  S.shifts[S.selectedDate]["__memo__"] = textarea.value || "";
+  S.shifts[S.selectedDate]["note"] = textarea.value || "";
   if (unsubscribe) { unsubscribe(); unsubscribe = null; }
   try {
     await setDoc(DATA_DOC, {members:S.members, roles:S.roles, shifts:S.shifts});
     showToast("備考を保存しました");
-  } catch(e) { showToast("保存に失敗しました"); }
+  } catch(e) { showToast("保存に失敗しました"); console.error(e); }
   startSync();
 };
 
@@ -306,10 +311,7 @@ window.renderSummary = function() {
   let html = "";
   days.forEach(function(d) {
     const key = dk(d), dow = d.getDay(), shift = S.shifts[key] || {};
-    const allNames = [];
-    Object.keys(shift).forEach(function(r) {
-      if (r !== "__memo__") { (shift[r] || []).forEach(function(n) { if (allNames.indexOf(n) < 0) allNames.push(n); }); }
-    });
+    const allNames = (shift["出席"] && Array.isArray(shift["出席"])) ? shift["出席"] : [];
     const isOpen = !!S.openSumDay[key], has = allNames.length > 0, sat = dow === 6, hol = isHol(key);
     const circCls = has ? "has" : hol ? "hol" : sat ? "sat" : "";
     const lblCls = hol ? "hol" : sat ? "sat" : "";
@@ -332,12 +334,13 @@ window.renderSummary = function() {
           (shift[role] || []).forEach(function(n) {
             const spkey = key + "::" + role + "::" + n;
             const sp = !!window.sumPendingRemove[spkey];
-            html += "<span class='sum-name-tag" + (sp ? " sum-pending-remove" : "") + "' onclick=\"sumRequestRemove('" + q(key) + "','" + q(role) + "','" + q(n) + "')\">" + n + "</span>";
+            const cls = sp ? "sum-name-tag sum-pending-remove" : "sum-name-tag";
+            html += "<span class='" + cls + "' data-dk='" + key + "' data-role='" + role + "' data-name='" + n + "' onclick='sumRequestRemove(this)'>" + n + "</span>";
           });
           html += "</div></div>";
         });
       }
-      const memo = shift["__memo__"] || "";
+      const memo = shift["note"] || "";
       if (memo) html += "<div class='sum-memo'>📝 " + memo.split("\n").join(" / ") + "</div>";
       html += "</div>";
     }
@@ -349,21 +352,18 @@ window.renderSummary = function() {
 window.toggleSumDay = function(key) { S.openSumDay[key] = !S.openSumDay[key]; renderSummary(); };
 window.changeSumWeek = function(dir) { S.sumWeekOffset += dir; S.openSumDay = {}; renderSummary(); };
 
-window.sumRequestRemove = function(dateKey, role, member) {
+window.sumRequestRemove = function(el) {
+  const dateKey = el.getAttribute("data-dk");
+  const role = el.getAttribute("data-role");
+  const member = el.getAttribute("data-name");
   const key = dateKey + "::" + role + "::" + member;
+  // トグル：赤←→元に戻す（削除はしない）
   if (window.sumPendingRemove[key]) {
     delete window.sumPendingRemove[key];
-    if (S.shifts[dateKey] && S.shifts[dateKey][role]) {
-      const arr = S.shifts[dateKey][role];
-      const idx = arr.indexOf(member);
-      if (idx >= 0) arr.splice(idx, 1);
-    }
-    window.saveData();
-    renderSummary();
   } else {
     window.sumPendingRemove[key] = true;
-    renderSummary();
   }
+  renderSummary();
 };
 
 // ---- メンバー ----
