@@ -305,7 +305,7 @@ window.renderSummary = function() {
   let html = "";
   days.forEach(function(d) {
     const key = dk(d), dow = d.getDay(), shift = S.shifts[key] || {};
-    const allNames = (shift["出席"] && Array.isArray(shift["出席"])) ? shift["出席"] : [];
+    const allNames = (shift["出席"] && Array.isArray(shift["出席"])) ? shift["出席"].filter(function(n){ return n; }) : [];
     const isOpen = !!S.openSumDay[key], has = allNames.length > 0, sat = dow === 6, hol = isHol(key);
     const circCls = has ? "has" : hol ? "hol" : sat ? "sat" : "";
     const lblCls = hol ? "hol" : sat ? "sat" : "";
@@ -326,8 +326,8 @@ window.renderSummary = function() {
         filled.forEach(function(role) {
           html += "<div class='sum-row'><span class='sum-role'>" + role + "</span><div class='sum-names'>";
           (shift[role] || []).forEach(function(n) {
-            const spkey = key + "::" + role + "::" + n;
-            const sp = !!window.sumPendingRemove[spkey];
+            const marked = (S.shifts[key] && S.shifts[key]["marked"]) ? S.shifts[key]["marked"] : [];
+            const sp = marked.indexOf(n + "::" + role) >= 0;
             const cls = sp ? "sum-name-tag sum-pending-remove" : "sum-name-tag";
             html += "<span class='" + cls + "' data-dk='" + key + "' data-role='" + role + "' data-name='" + n + "' onclick='sumRequestRemove(this)'>" + n + "</span>";
           });
@@ -347,16 +347,21 @@ window.toggleSumDay = function(key) { S.openSumDay[key] = !S.openSumDay[key]; re
 window.changeSumWeek = function(dir) { S.sumWeekOffset += dir; S.openSumDay = {}; renderSummary(); };
 
 window.sumRequestRemove = function(el) {
+  if (!isAdmin) return;
   const dateKey = el.getAttribute("data-dk");
   const role = el.getAttribute("data-role");
   const member = el.getAttribute("data-name");
-  const key = dateKey + "::" + role + "::" + member;
-  // トグル：赤←→元に戻す（削除はしない）
-  if (window.sumPendingRemove[key]) {
-    delete window.sumPendingRemove[key];
+  const key = member + "::" + role;
+  if (!S.shifts[dateKey]) S.shifts[dateKey] = {};
+  const marked = S.shifts[dateKey]["marked"] || [];
+  const idx = marked.indexOf(key);
+  if (idx >= 0) {
+    marked.splice(idx, 1);
   } else {
-    window.sumPendingRemove[key] = true;
+    marked.push(key);
   }
+  S.shifts[dateKey]["marked"] = marked;
+  window.saveData();
   renderSummary();
 };
 
