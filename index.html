@@ -23,6 +23,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app, "member11");
 const DATA_DOC = doc(db, "shiftapp", "data");
+const STAFF_DOC = doc(db, "shiftapp", "staffshift");
 
 let S = { members:[], roles:[], shifts:{}, weekOffset:0, sumWeekOffset:0, selectedDate:null, openCL:{}, openSumDay:{} };
 let currentUser = null;
@@ -468,11 +469,74 @@ window.dragEnd = function(e) {
   document.querySelectorAll(".list-item").forEach(function(el) { el.classList.remove("drag-over"); });
 };
 
+// ---- 職員シフト ----
+window.renderStaffShift = async function() {
+  const el = document.getElementById("staff-shift-content");
+  el.innerHTML = "<div class='empty'>読み込み中...</div>";
+  try {
+    const snap = await getDoc(STAFF_DOC);
+    if (!snap.exists() || !snap.data().base64) {
+      el.innerHTML = "<div class='empty'>ファイルが登録されていません</div>";
+      return;
+    }
+    const data = snap.data();
+    const base64 = data.base64;
+    const name = data.name || "";
+    const mime = data.mime || "";
+    const isPdf = mime === "application/pdf";
+    const isImg = mime.startsWith("image/");
+    let html = "<div class='staff-file-info'><span class='staff-file-name'>📄 " + name + "</span></div>";
+    if (isPdf) {
+      html += "<iframe class='staff-preview' src='" + base64 + "'></iframe>";
+    } else if (isImg) {
+      html += "<img class='staff-img-preview' src='" + base64 + "'>";
+    } else {
+      html += "<div class='empty'>プレビュー非対応のファイル形式です</div>";
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = "<div class='empty'>読み込みに失敗しました</div>";
+    console.error(e);
+  }
+};
+
+window.uploadStaffShift = function() {
+  if (!isAdmin) return;
+  const input = document.getElementById("staff-file-input");
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 1.2 * 1024 * 1024) {
+    showToast("1MB以下のファイルを選択してください");
+    return;
+  }
+  const btn = document.getElementById("staff-upload-btn");
+  btn.disabled = true; btn.textContent = "保存中...";
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    try {
+      await setDoc(STAFF_DOC, {
+        base64: e.target.result,
+        name: file.name,
+        mime: file.type,
+        updatedAt: new Date().toISOString()
+      });
+      showToast("アップロードしました");
+      input.value = "";
+      renderStaffShift();
+    } catch(err) {
+      showToast("保存に失敗しました");
+      console.error(err);
+    }
+    btn.disabled = false; btn.textContent = "アップロード";
+  };
+  reader.readAsDataURL(file);
+};
+
 // ---- タブ ----
-const TITLES = {summary:"一覧", shift:"シフト", members:"メンバー", roles:"役割"};
-const SUBS = {summary:"週ごとのシフト確認", shift:"日付を選んで割り当て", members:"スタッフの登録・管理", roles:"役割の登録・管理"};
+const TITLES = {summary:"一覧", shift:"スケジュール登録", members:"メンバー", roles:"役割", staff:"職員シフト"};
+const SUBS = {summary:"週ごとのシフト確認", shift:"日付を選んで割り当て", members:"スタッフの登録・管理", roles:"役割の登録・管理", staff:"職員シフト表の確認"};
 window.switchTab = function(tab) {
-  ["summary","shift","members","roles"].forEach(function(t) {
+  ["summary","shift","members","roles","staff"].forEach(function(t) {
     document.getElementById("tab-" + t).classList.toggle("active", t === tab);
     document.getElementById("nav-" + t).classList.toggle("active", t === tab);
   });
@@ -481,6 +545,7 @@ window.switchTab = function(tab) {
   if (tab === "members") renderMembers();
   if (tab === "roles") renderRoles();
   if (tab === "summary") { S.sumWeekOffset = S.weekOffset; renderSummary(); }
+  if (tab === "staff") renderStaffShift();
 };
 </script>
 <style>
@@ -634,6 +699,10 @@ html,body{min-height:100%;font-family:'Hiragino Sans','Hiragino Kaku Gothic ProN
 .sum-name-tag.sum-pending-remove{background:#FCEBEB;color:var(--hol-dark);border:1px solid var(--hol)}
 .sum-empty{font-size:13px;color:var(--text2);font-style:italic}
 .sum-memo{font-size:12px;color:var(--text2);padding:6px 0;line-height:1.5;border-top:0.5px solid var(--border);margin-top:6px}
+.staff-file-info{padding:10px 14px;background:var(--acc-light);border-radius:10px;margin-bottom:12px}
+.staff-file-name{font-size:13px;font-weight:500;color:var(--acc-text)}
+.staff-preview{width:100%;height:70vh;border:none;border-radius:10px;background:#fff}
+.staff-img-preview{width:100%;border-radius:10px;display:block}
 </style>
 </head>
 <body>
@@ -730,12 +799,27 @@ html,body{min-height:100%;font-family:'Hiragino Sans','Hiragino Kaku Gothic ProN
             <div id="role-list"></div>
           </div>
         </div>
+        <div id="tab-staff" class="section">
+          <div class="list-section">
+            <div id="staff-upload-area" class="admin-only" style="margin-bottom:14px">
+              <div class="list-add" style="flex-direction:column;gap:10px;align-items:stretch">
+                <div style="font-size:13px;color:var(--text2)">PDF・画像ファイルを1つ登録できます（次のファイルをアップロードすると前のファイルは削除されます）</div>
+                <div style="display:flex;gap:8px">
+                  <input type="file" id="staff-file-input" accept=".pdf,image/*" style="flex:1;font-size:13px;color:var(--text)">
+                  <button id="staff-upload-btn" class="add-action-btn" onclick="uploadStaffShift()">アップロード</button>
+                </div>
+              </div>
+            </div>
+            <div id="staff-shift-content"><div class="empty">ファイルが登録されていません</div></div>
+          </div>
+        </div>
       </div>
       <div class="bottomnav">
         <button class="nav-btn active" id="nav-summary" onclick="switchTab('summary')"><span class="nav-icon">📋</span>一覧</button>
-        <button class="nav-btn" id="nav-shift" onclick="switchTab('shift')"><span class="nav-icon">📅</span>シフト登録</button>
+        <button class="nav-btn" id="nav-shift" onclick="switchTab('shift')"><span class="nav-icon">📅</span>スケジュール登録</button>
         <button class="nav-btn" id="nav-members" onclick="switchTab('members')"><span class="nav-icon">👥</span>メンバー</button>
         <button class="nav-btn" id="nav-roles" onclick="switchTab('roles')"><span class="nav-icon">🏷</span>役割</button>
+        <button class="nav-btn" id="nav-staff" onclick="switchTab('staff')"><span class="nav-icon">📁</span>職員シフト</button>
       </div>
     </div>
   </div>
