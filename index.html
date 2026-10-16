@@ -28,6 +28,7 @@ const STAFF_DOC = doc(db, "shiftapp", "staffshift");
 let S = { members:[], roles:[], shifts:{}, weekOffset:0, sumWeekOffset:0, selectedDate:null, openCL:{}, openSumDay:{} };
 let currentUser = null;
 let isAdmin = false;
+window.isAdmin = false;
 let unsubscribe = null;
 window.pendingRemove = {};
 window.sumPendingRemove = {};
@@ -77,6 +78,7 @@ onAuthStateChanged(auth, async function(user) {
       return;
     }
     isAdmin = info ? info.role === "admin" : false;
+    window.isAdmin = isAdmin;
     showScreen("app");
     document.getElementById("user-name-label").textContent = info ? (info.displayName || user.email) : user.email;
     document.getElementById("admin-badge").style.display = isAdmin ? "inline-block" : "none";
@@ -128,6 +130,7 @@ window.doSetupPassword = async function() {
     showToast("パスワードを設定しました");
     const info = await fetchUserInfo(currentUser.uid);
     isAdmin = info ? info.role === "admin" : false;
+    window.isAdmin = isAdmin;
     showScreen("app");
     document.getElementById("user-name-label").textContent = info ? (info.displayName || currentUser.email) : currentUser.email;
     document.getElementById("admin-badge").style.display = isAdmin ? "inline-block" : "none";
