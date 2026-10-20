@@ -511,17 +511,14 @@ window.uploadStaffShift = function() {
   const input = document.getElementById("staff-file-input");
   const file = input.files[0];
   if (!file) return;
-  if (file.size > 1.2 * 1024 * 1024) {
-    showToast("1MB以下のファイルを選択してください");
-    return;
-  }
-  const btn = document.getElementById("staff-upload-btn");
-  btn.disabled = true; btn.textContent = "保存中...";
-  const reader = new FileReader();
-  reader.onload = async function(e) {
+  const isPdf = file.type === "application/pdf";
+  const isImg = file.type.startsWith("image/");
+  if (!isPdf && !isImg) { showToast("PDF・画像ファイルを選択してください"); return; }
+
+  const doSave = async function(dataUrl) {
     try {
       await setDoc(STAFF_DOC, {
-        base64: e.target.result,
+        base64: dataUrl,
         name: file.name,
         mime: file.type,
         updatedAt: new Date().toISOString()
@@ -530,12 +527,50 @@ window.uploadStaffShift = function() {
       input.value = "";
       renderStaffShift();
     } catch(err) {
-      showToast("保存に失敗しました");
+      showToast("保存に失敗しました: " + err.message);
       console.error(err);
     }
-    btn.disabled = false; btn.textContent = "アップロード";
   };
-  reader.readAsDataURL(file);
+
+  if (isPdf) {
+    // PDFはそのままBase64
+    if (file.size > 700 * 1024) { showToast("PDFは700KB以下にしてください"); return; }
+    const reader = new FileReader();
+    reader.onload = function(e) { doSave(e.target.result); };
+    reader.readAsDataURL(file);
+  } else {
+    // 画像はCanvasで圧縮してからBase64に変換
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const img = new Image();
+      img.onload = function() {
+        const MAX = 1200;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        // 品質を下げながら700KB以下に収める
+        let quality = 0.85;
+        let dataUrl = canvas.toDataURL("image/jpeg", quality);
+        while (dataUrl.length > 700 * 1024 * 1.37 && quality > 0.3) {
+          quality -= 0.1;
+          dataUrl = canvas.toDataURL("image/jpeg", quality);
+        }
+        if (dataUrl.length > 900 * 1024) {
+          showToast("画像が大きすぎます。小さい画像を使用してください");
+          return;
+        }
+        doSave(dataUrl);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
 };
 
 // ---- タブ ----
